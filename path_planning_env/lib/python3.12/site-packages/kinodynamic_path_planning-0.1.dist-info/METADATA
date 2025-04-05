@@ -1,0 +1,8 @@
+Metadata-Version: 2.2
+Name: kinodynamic_path_planning
+Version: 0.1
+Requires-Dist: numpy
+Requires-Dist: opencv-python
+Requires-Dist: matplotlib
+Requires-Dist: streamlit
+Dynamic: requires-dist
