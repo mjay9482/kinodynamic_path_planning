@@ -4,7 +4,7 @@ from scipy.spatial import distance
 from scipy.optimize import minimize
 
 class GraphSLAM:
-    def __init__(self, map_size=(1000, 1000), feature_detector='orb'):
+    def __init__(self, map_size=(1000, 1000), feature_detector='orb', resolution=0.1):
         self.map_size = map_size
         self.landmarks = []  # List of landmark positions
         self.landmark_descriptors = []  # List of landmark descriptors
@@ -23,6 +23,26 @@ class GraphSLAM:
             self.detector = cv2.ORB_create(nfeatures=200, scaleFactor=1.2, nlevels=8, edgeThreshold=15, firstLevel=0, WTA_K=2, patchSize=31, fastThreshold=20)
         else:
             raise ValueError("Unsupported feature detector")
+        
+        # Add occupancy grid
+        self.resolution = resolution
+        self.occupancy_grid = np.zeros(map_size, dtype=np.float32)
+        self.occupancy_grid.fill(0.5)  # Initialize with uncertainty
+        
+        # Create a new map from scratch
+        self.generated_map = np.ones(map_size, dtype=np.uint8) * 255  # White background (free space)
+        self.explored_cells = np.zeros(map_size, dtype=np.uint8)  # Track explored cells
+        
+        # Add map boundaries and scaling
+        self.map_boundaries = {
+            'x_min': 0,
+            'x_max': map_size[0],
+            'y_min': 0,
+            'y_max': map_size[1]
+        }
+        self.scale_factor = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
 
     def detect_features(self, frame):
         """Detect features in the current frame."""
@@ -93,6 +113,9 @@ class GraphSLAM:
             robot_pose = robot_pose.tolist()
         self.robot_poses.append(robot_pose)
         
+        # Update the generated map with the robot's position
+        self.update_generated_map(robot_pose)
+        
         # Detect features in the current frame
         keypoints, descriptors = self.detect_features(frame)
         
@@ -139,6 +162,66 @@ class GraphSLAM:
             if self.optimization_counter >= self.optimization_frequency:
                 self.optimize_map()
                 self.optimization_counter = 0
+
+    def update_generated_map(self, robot_pose):
+        """Update the generated map based on robot position."""
+        # Convert robot pose to map coordinates
+        x, y = int(robot_pose[0]), int(robot_pose[1])
+        
+        # Update map boundaries based on robot position
+        self.map_boundaries['x_min'] = min(self.map_boundaries['x_min'], x - 100)
+        self.map_boundaries['x_max'] = max(self.map_boundaries['x_max'], x + 100)
+        self.map_boundaries['y_min'] = min(self.map_boundaries['y_min'], y - 100)
+        self.map_boundaries['y_max'] = max(self.map_boundaries['y_max'], y + 100)
+        
+        # Calculate scale factor to fit the map in the visualization area
+        map_width = self.map_boundaries['x_max'] - self.map_boundaries['x_min']
+        map_height = self.map_boundaries['y_max'] - self.map_boundaries['y_min']
+        
+        if map_width > 0 and map_height > 0:
+            # Add some padding
+            self.scale_factor = min(
+                self.map_size[0] / (map_width + 200),
+                self.map_size[1] / (map_height + 200)
+            )
+            
+            # Calculate offset to center the map
+            self.offset_x = (self.map_size[0] - map_width * self.scale_factor) / 2
+            self.offset_y = (self.map_size[1] - map_height * self.scale_factor) / 2
+        
+        # Mark the robot's position as explored
+        if 0 <= x < self.map_size[0] and 0 <= y < self.map_size[1]:
+            self.explored_cells[y, x] = 255
+            
+            # Mark surrounding cells as explored (free space)
+            radius = 20  # cells
+            for i in range(-radius, radius+1):
+                for j in range(-radius, radius+1):
+                    if 0 <= x+i < self.map_size[0] and 0 <= y+j < self.map_size[1]:
+                        # Mark as explored
+                        self.explored_cells[y+j, x+i] = 255
+                        
+                        # Mark as free space in the generated map
+                        self.generated_map[y+j, x+i] = 255  # White (free space)
+                        
+                        # Add some noise to make it look more natural
+                        if np.random.random() < 0.1:  # 10% chance
+                            self.generated_map[y+j, x+i] = 240  # Slightly darker (still free space)
+        
+        # Add some "obstacles" based on landmarks
+        for landmark in self.landmarks:
+            lx, ly = int(landmark[0]), int(landmark[1])
+            if 0 <= lx < self.map_size[0] and 0 <= ly < self.map_size[1]:
+                # Mark landmark as explored
+                self.explored_cells[ly, lx] = 255
+                
+                # Add a small obstacle around the landmark
+                obstacle_radius = 5
+                for i in range(-obstacle_radius, obstacle_radius+1):
+                    for j in range(-obstacle_radius, obstacle_radius+1):
+                        if 0 <= lx+i < self.map_size[0] and 0 <= ly+j < self.map_size[1]:
+                            # Mark as obstacle in the generated map
+                            self.generated_map[ly+j, lx+i] = 0  # Black (obstacle)
 
     def optimize_map(self):
         """Optimize the map using graph optimization."""
@@ -217,37 +300,40 @@ class GraphSLAM:
 
     def visualize_map(self, frame):
         """Visualize the current map state."""
-        if frame is None:
-            # Create a blank map if no frame is provided
-            vis_frame = np.zeros((self.map_size[1], self.map_size[0], 3), dtype=np.uint8)
-        else:
-            vis_frame = frame.copy()
+        # Create a visualization frame based on the generated map
+        vis_frame = cv2.cvtColor(self.generated_map, cv2.COLOR_GRAY2BGR)
         
         # Limit the number of landmarks and poses to visualize for performance
         max_visualize = 100
         landmarks_to_show = self.landmarks[:max_visualize] if len(self.landmarks) > max_visualize else self.landmarks
         poses_to_show = self.robot_poses[-max_visualize:] if len(self.robot_poses) > max_visualize else self.robot_poses
         
-        # Draw landmarks
+        # Draw landmarks with scaling
         for i, landmark in enumerate(landmarks_to_show):
-            x, y = int(landmark[0]), int(landmark[1])
+            # Apply scaling and offset
+            x = int(landmark[0] * self.scale_factor + self.offset_x)
+            y = int(landmark[1] * self.scale_factor + self.offset_y)
+            
             if 0 <= x < vis_frame.shape[1] and 0 <= y < vis_frame.shape[0]:
                 cv2.circle(vis_frame, (x, y), 5, (0, 255, 0), -1)
                 # Add landmark ID only for a subset
                 if i % 5 == 0:  # Show ID for every 5th landmark
                     cv2.putText(vis_frame, str(i), (x+5, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
-        # Draw robot poses
+        # Draw robot poses with scaling
         for i, pose in enumerate(poses_to_show):
             x, y, theta = pose
-            x, y = int(x), int(y)
+            # Apply scaling and offset
+            x = int(x * self.scale_factor + self.offset_x)
+            y = int(y * self.scale_factor + self.offset_y)
+            
             if 0 <= x < vis_frame.shape[1] and 0 <= y < vis_frame.shape[0]:
                 # Draw robot position
                 cv2.circle(vis_frame, (x, y), 7, (0, 0, 255), -1)
                 
                 # Draw robot orientation
-                end_x = int(x + 30 * np.cos(theta))
-                end_y = int(y + 30 * np.sin(theta))
+                end_x = int(x + 30 * np.cos(theta) * self.scale_factor)
+                end_y = int(y + 30 * np.sin(theta) * self.scale_factor)
                 if 0 <= end_x < vis_frame.shape[1] and 0 <= end_y < vis_frame.shape[0]:
                     cv2.line(vis_frame, (x, y), (end_x, end_y), (0, 0, 255), 2)
                 
@@ -264,8 +350,12 @@ class GraphSLAM:
             robot_pose = meas['robot_pose']
             if landmark_idx < len(self.landmarks):
                 landmark = self.landmarks[landmark_idx]
-                x1, y1 = int(landmark[0]), int(landmark[1])
-                x2, y2 = int(robot_pose[0]), int(robot_pose[1])
+                # Apply scaling and offset
+                x1 = int(landmark[0] * self.scale_factor + self.offset_x)
+                y1 = int(landmark[1] * self.scale_factor + self.offset_y)
+                x2 = int(robot_pose[0] * self.scale_factor + self.offset_x)
+                y2 = int(robot_pose[1] * self.scale_factor + self.offset_y)
+                
                 if (0 <= x1 < vis_frame.shape[1] and 0 <= y1 < vis_frame.shape[0] and
                     0 <= x2 < vis_frame.shape[1] and 0 <= y2 < vis_frame.shape[0]):
                     cv2.line(vis_frame, (x1, y1), (x2, y2), (255, 255, 0), 1)
@@ -278,11 +368,28 @@ class GraphSLAM:
         cv2.putText(vis_frame, f"Measurements: {len(self.measurements)}", (10, 90), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
+        # Add map boundaries information
+        cv2.putText(vis_frame, f"Map: {self.map_boundaries['x_min']:.0f},{self.map_boundaries['y_min']:.0f} to {self.map_boundaries['x_max']:.0f},{self.map_boundaries['y_max']:.0f}", 
+                    (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
         self.map_image = vis_frame
         return vis_frame
 
     def get_map_image(self):
         """Return the current map image."""
         if self.map_image is None:
-            return np.zeros((self.map_size[1], self.map_size[0], 3), dtype=np.uint8)
-        return self.map_image 
+            # Create a default map if none exists
+            self.map_image = cv2.cvtColor(self.generated_map, cv2.COLOR_GRAY2BGR)
+        return self.map_image
+
+    def update_occupancy_grid(self, robot_pose):
+        # Convert robot pose to grid coordinates
+        x, y = int(robot_pose[0] / self.resolution), int(robot_pose[1] / self.resolution)
+        
+        # Mark cells around robot as free space
+        radius = 10  # cells
+        for i in range(-radius, radius+1):
+            for j in range(-radius, radius+1):
+                if 0 <= x+i < self.map_size[0] and 0 <= y+j < self.map_size[1]:
+                    # Update with log-odds
+                    self.occupancy_grid[y+j, x+i] += 0.1  # Increase probability of free space 
