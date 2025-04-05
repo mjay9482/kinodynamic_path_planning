@@ -171,4 +171,39 @@ cython_debug/
 .ruff_cache/
 
 # PyPI configuration file
+
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+path_planning_env/
+venv/
+.env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Results / Checkpoints / Logs (Optional)
+results/*.npy
+results/*.mp4
+results/*.log
+
+# Ignore large maps
+data/*.npy
+
+# OS and editor files
+.DS_Store
+*.swp
+
+# GTSAM build
+gtsam/build/
+
 .pypirc
