@@ -139,11 +139,11 @@ class ILOS:
             state[:] = sol.y[:, -1]
             
             distance_to_target = np.linalg.norm(state[:2] - np.array(self.waypoints[current_target_idx]))
-            if distance_to_target < self.DELTA * 0.5 and current_target_idx < len(self.waypoints) - 1:
+            if distance_to_target < self.DELTA  and current_target_idx < len(self.waypoints) - 1:
                 current_target_idx += 1
             if current_target_idx == len(self.waypoints) - 1:
                 final_dist = np.linalg.norm(state[:2] - np.array(self.waypoints[-1]))
-                if final_dist < self.DELTA * 0.5:
+                if final_dist < self.DELTA:
                     if anim is not None:
                         anim.event_source.stop()
             
